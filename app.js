@@ -6,11 +6,14 @@
 // 🔒 安全不變式（全檔遵守）：
 //   1. 私鑰／助記詞永不寫入 localStorage / sessionStorage / cookie / URL。
 //   2. 私鑰永不進入任何 fetch / XHR / WebSocket / sendBeacon 的參數。
+//      （本檔用 WebSocket 只為「盯新區塊」——唯讀，傳的是 eth_subscribe/eth_call，
+//       絕無私鑰；簽名一律 signTransaction 本機做。）
 //   3. 唯一離開瀏覽器的機密相關資料 = ethers 在本機簽好的 rawTx 字串，
 //      經使用者設定的 RPC 廣播（eth_sendRawTransaction）。
 //   4. ethers 為本地內建（./vendor/ethers.min.js，未走 CDN、未改動）。
-//   本檔唯二的對外網路行為：(a) JSON-RPC provider（讀鏈 + 廣播已簽 rawTx）；
-//   (b) allowlist 的 mintbay merkle-proof GET（只帶「地址」，非私鑰）。
+//   本檔對外網路行為：(a) JSON-RPC provider（讀鏈 + 模擬 eth_call + 廣播已簽 rawTx）；
+//   (b) WebSocket provider（訂閱新區塊，唯讀，無私鑰）；
+//   (c) allowlist 的 mintbay merkle-proof GET（只帶「地址」，非私鑰）。
 // ============================================================================
 
 import * as ethers from "./vendor/ethers.min.js";
@@ -66,8 +69,10 @@ const dom = {
   qtyMinus: el("qtyMinus"), qtyPlus: el("qtyPlus"), qtyInput: el("qtyInput"), qtyMaxHint: el("qtyMaxHint"),
   gasMode: el("gasMode"), autoMult: el("autoMult"), autoMultField: el("autoMultField"),
   maxFeeInput: el("maxFeeInput"), prioFeeInput: el("prioFeeInput"), gasLimitInput: el("gasLimitInput"),
+  floorPriceInput: el("floorPriceInput"), simBeforeSendChk: el("simBeforeSendChk"),
   allowlistBox: el("allowlistBox"), phaseNameInput: el("phaseNameInput"), fetchProofsBtn: el("fetchProofsBtn"), allowlistStatus: el("allowlistStatus"),
   sumWallets: el("sumWallets"), sumPerWallet: el("sumPerWallet"), sumTotal: el("sumTotal"),
+  detectBar: el("detectBar"), detectText: el("detectText"),
   armBtn: el("armBtn"), fireBtn: el("fireBtn"), fireHint: el("fireHint"),
   logBody: el("logBody"), clearLogBtn: el("clearLogBtn"), toast: el("toast"),
 };
@@ -80,7 +85,11 @@ const state = {
   contractAddress: DEFAULT_CONTRACT,
   readProvider: null,
   readContract: null,
-  wallets: [],                  // { id, wallet, address, balance, proof, proofFor, status, txHash, error }
+  wsProvider: null,             // WebSocket provider（盯塊，唯讀）
+  blockWatch: null,             // 安全輪詢 interval id
+  detectMode: "idle",           // idle | wss | poll
+  checking: false,              // 開售模擬 in-flight 鎖，避免重疊
+  wallets: [],                  // { id, wallet, address, balance, proof, proofFor, status, txHash, error, signedRawTx }
   quantity: 1,
   data: null,                   // 最新鏈上快照
   pollTimer: null,
@@ -196,7 +205,7 @@ async function pollOnce(mySeq) {
     dom.chainBadge.dataset.state = "ok";
     dom.chainBadgeText.textContent = `${CHAIN_NAME} (${CHAIN_ID})`;
     render();
-    maybeAutoFire();
+    if (state.armed) checkOpenAndFire("poll-refresh");
   } catch (err) {
     setTargetStatus("讀取失敗：" + shortErr(err), "error");
     dom.chainBadge.dataset.state = "bad";
@@ -343,7 +352,8 @@ function clearWallets() {
 
 function statusBadge(w) {
   const map = {
-    idle: ["待命", "idle"], signing: ["簽名中", "pending"], pending: ["廣播中", "pending"],
+    idle: ["待命", "idle"], armed: ["預簽待命", "pending"], signing: ["簽名中", "pending"],
+    simulating: ["模擬中", "pending"], pending: ["廣播中", "pending"],
     mining: ["上鏈中", "pending"], success: ["成功", "ok"], fail: ["失敗", "danger"],
   };
   const [txt, cls] = map[w.status] || ["—", ""];
@@ -407,15 +417,25 @@ function setQuantity(q) {
   updateSummary();
 }
 
-function unitCost() {
+// 鏈上即時單價 = mintPrice + collectorFee
+function chainUnit() {
   const data = state.data;
   if (!data || !data.phase) return 0n;
   return data.phase.mintPrice + data.collectorFee;
 }
+// 使用者設的保底單價（ETH/個）
+function floorUnit() {
+  try { return ethers.parseEther(String(dom.floorPriceInput.value || "0")); } catch { return 0n; }
+}
+// 實付單價 = max(鏈上即時, 保底) — 絕不付少導致 revert 白燒 gas
+function effectiveUnit() {
+  const c = chainUnit(), f = floorUnit();
+  return c > f ? c : f;
+}
 
 function updateSummary() {
   const n = state.wallets.length;
-  const per = unitCost() * BigInt(Math.max(state.quantity, 0));
+  const per = effectiveUnit() * BigInt(Math.max(state.quantity, 0));
   dom.sumWallets.textContent = String(n);
   dom.sumPerWallet.textContent = fmtEth(per);
   dom.sumTotal.textContent = fmtEth(per * BigInt(n));
@@ -470,47 +490,173 @@ async function fetchAllProofs() {
   renderWallets();
 }
 
-// -------------------------------------------------------------- 開火（核心）
-// 對單一錢包：本機組交易 → 本機簽名 → 廣播已簽 rawTx。
-// gas 由 fireAll 一次算好傳入（避免每個錢包各打一次 getBlock，搶鑄時省 RPC、更快）。
-async function fireOne(w, gas) {
+// -------------------------------------------------------------- 模擬 / 偵測開售
+// eth_call 模擬某錢包的 mint（唯讀、不花錢）。成功=能鑄；revert=沒開/不符資格。
+async function simulateWallet(w) {
   const data = state.data;
+  if (!data || !data.phase || !w) return false;
   const qty = state.quantity;
-  const value = unitCost() * BigInt(qty);
-  const isAllowlist = data.phase.phaseType === 1;
-
+  const value = effectiveUnit() * BigInt(qty);
   let calldata;
-  if (isAllowlist) {
-    if (!w.proof || w.proofFor !== proofKeyFor(w)) throw new Error("無有效 merkle proof");
+  if (data.phase.phaseType === 1) {
+    if (!w.proof || w.proofFor !== proofKeyFor(w)) return false;
     calldata = iface.encodeFunctionData("allowlistMint", [qty, w.proof]);
   } else {
     calldata = iface.encodeFunctionData("mint", [qty]);
   }
+  try {
+    // from 帶錢包地址，讓合約的 per-address / allowlist 檢查如實生效
+    await state.readProvider.call({ to: state.contractAddress, data: calldata, value, from: w.address });
+    return true;
+  } catch { return false; }
+}
 
-  const nonce = await state.readProvider.getTransactionCount(w.address, "pending");
+// 用第一個錢包模擬，判斷公售是否已開（不靠時間戳，支援手動開售 mintStart=0）
+function simulateOpen() {
+  return state.wallets[0] ? simulateWallet(state.wallets[0]) : Promise.resolve(false);
+}
 
-  // 完整組好的 EIP-1559 交易（不含 from，簽名時由私鑰推導）
-  const txReq = {
-    to: state.contractAddress,
-    data: calldata,
-    value,
-    nonce,
-    gasLimit: gas.gasLimit,
-    maxFeePerGas: gas.maxFeePerGas,
-    maxPriorityFeePerGas: gas.maxPriorityFeePerGas,
-    chainId: CHAIN_ID,
-    type: 2,
-  };
+function setDetect(mode, text) {
+  if (mode == null) { dom.detectBar.hidden = true; return; }
+  dom.detectBar.hidden = false;
+  dom.detectBar.dataset.mode = mode;
+  dom.detectText.textContent = text;
+}
 
-  w.status = "signing"; w.error = null; renderWallets();
-  // 🔒 本機簽名：ethers 用記憶體中的私鑰把交易簽成 rawTx 字串。純本機計算，無網路。
-  const signedRawTx = await w.wallet.signTransaction(txReq);
+// 每個新區塊（或安全輪詢）觸發：模擬偵測開售，一開就並發開火。
+async function checkOpenAndFire(source) {
+  if (!state.armed || state.firing || state.checking) return;
+  const data = state.data;
+  if (!data || !data.phase || data.didMintEnd) return;
+  if (state.firedForPhase === data.currentPhaseId) return;
+  state.checking = true;
+  let open = false;
+  try { open = await simulateOpen(); } catch { open = false; } finally { state.checking = false; }
+  if (!state.armed || state.firing) return;
+  if (open) {
+    state.firedForPhase = data.currentPhaseId;
+    setDetect("open", "模擬成功 → 開售！並發開火");
+    log(`🎯 模擬 mint 成功（${source}）→ 判定已開售 → 批量開火`, "ok");
+    showToast("🎯 開售偵測到，自動並發開火！");
+    fireAll("自動·模擬偵測");
+  } else {
+    setDetect("watch", `盯塊中（${source}）…尚未開售`);
+  }
+}
+
+// -------------------------------------------------------------- 盯塊（WSS 優先 + 安全輪詢）
+function deriveWssUrl(httpUrl) {
+  if (/^wss?:\/\//i.test(httpUrl)) return httpUrl;
+  if (/^https:\/\//i.test(httpUrl)) return httpUrl.replace(/^https:/i, "wss:");
+  if (/^http:\/\//i.test(httpUrl)) return httpUrl.replace(/^http:/i, "ws:");
+  return null;
+}
+
+function startBlockWatch() {
+  stopBlockWatch();
+  // WSS 盯塊（事件驅動、最低延遲）。連不上也沒關係，下面的安全輪詢是底線。
+  const wssUrl = deriveWssUrl(state.rpcUrl);
+  if (wssUrl) {
+    try {
+      state.wsProvider = new ethers.WebSocketProvider(wssUrl, { chainId: CHAIN_ID, name: "robinhood" });
+      state.wsProvider.on("block", (bn) => { setDetect("watch", `WSS 盯塊 #${bn}，模擬偵測中…`); checkOpenAndFire("WSS"); });
+      state.detectMode = "wss";
+      log("盯塊：WebSocket 已連（事件驅動）", "ok");
+    } catch (e) {
+      state.wsProvider = null;
+      log("WSS 連線失敗，改用快輪詢盯塊：" + shortErr(e), "warn");
+    }
+  }
+  // 安全輪詢（3s）：WSS 靜默死亡也能兜底；同時當作 WSS 不可用時的主偵測。
+  state.blockWatch = setInterval(() => checkOpenAndFire("poll"), 3000);
+  if (!state.wsProvider) state.detectMode = "poll";
+}
+
+function stopBlockWatch() {
+  if (state.wsProvider) { try { state.wsProvider.destroy(); } catch { /* ignore */ } state.wsProvider = null; }
+  if (state.blockWatch) { clearInterval(state.blockWatch); state.blockWatch = null; }
+  state.detectMode = "idle";
+}
+
+// -------------------------------------------------------------- 預簽（待命時把全部交易先簽好）
+// 🔒 預簽 = 本機用私鑰把交易簽成 rawTx 字串存記憶體，開售當下只需廣播，延遲最低。
+async function presignAll() {
+  const data = state.data;
+  const qty = state.quantity;
+  const value = effectiveUnit() * BigInt(qty);
+  const isAllowlist = data.phase.phaseType === 1;
+  let gas;
+  try { gas = await buildGasParams(); }
+  catch (e) { log("gas 計算失敗，無法預簽：" + shortErr(e), "danger"); return 0; }
+
+  let signed = 0, failed = 0;
+  await Promise.all(state.wallets.map(async (w) => {
+    try {
+      let calldata;
+      if (isAllowlist) {
+        if (!w.proof || w.proofFor !== proofKeyFor(w)) throw new Error("無有效 merkle proof");
+        calldata = iface.encodeFunctionData("allowlistMint", [qty, w.proof]);
+      } else {
+        calldata = iface.encodeFunctionData("mint", [qty]);
+      }
+      const nonce = await state.readProvider.getTransactionCount(w.address, "pending");
+      const txReq = {
+        to: state.contractAddress, data: calldata, value, nonce,
+        gasLimit: gas.gasLimit, maxFeePerGas: gas.maxFeePerGas, maxPriorityFeePerGas: gas.maxPriorityFeePerGas,
+        chainId: CHAIN_ID, type: 2,
+      };
+      // 🔒 本機預簽，純計算無網路
+      w.signedRawTx = await w.wallet.signTransaction(txReq);
+      w.status = "armed"; w.error = null; signed++;
+    } catch (e) {
+      w.signedRawTx = null; w.status = "fail"; w.error = "預簽失敗:" + shortErr(e); failed++;
+    }
+  }));
+  renderWallets();
+  log(`預簽完成：${signed} 成功 / ${failed} 失敗（開售當下直接廣播）`, signed ? "ok" : "danger");
+  return signed;
+}
+
+// -------------------------------------------------------------- 開火（核心）
+// 對單一錢包：（可選）送前模擬 → 用預簽 rawTx 或本機現簽 → 廣播已簽 rawTx。
+async function fireOne(w, gas) {
+  const data = state.data;
+  const qty = state.quantity;
+  const value = effectiveUnit() * BigInt(qty);
+
+  // 送前模擬（可選）：eth_call 確認此錢包能 mint，否則跳過省 gas。
+  if (dom.simBeforeSendChk.checked) {
+    w.status = "simulating"; renderWallets();
+    const ok = await simulateWallet(w);
+    if (!ok) { w.status = "fail"; w.error = "模擬失敗，跳過(省 gas)"; renderWallets(); throw new Error("模擬失敗"); }
+  }
+
+  // 優先用待命時的預簽交易；沒有就現場本機簽。
+  let raw = w.signedRawTx;
+  if (!raw) {
+    const isAllowlist = data.phase.phaseType === 1;
+    let calldata;
+    if (isAllowlist) {
+      if (!w.proof || w.proofFor !== proofKeyFor(w)) throw new Error("無有效 merkle proof");
+      calldata = iface.encodeFunctionData("allowlistMint", [qty, w.proof]);
+    } else {
+      calldata = iface.encodeFunctionData("mint", [qty]);
+    }
+    const nonce = await state.readProvider.getTransactionCount(w.address, "pending");
+    const txReq = {
+      to: state.contractAddress, data: calldata, value, nonce,
+      gasLimit: gas.gasLimit, maxFeePerGas: gas.maxFeePerGas, maxPriorityFeePerGas: gas.maxPriorityFeePerGas,
+      chainId: CHAIN_ID, type: 2,
+    };
+    w.status = "signing"; w.error = null; renderWallets();
+    // 🔒 本機簽名：ethers 用記憶體中的私鑰把交易簽成 rawTx。純本機計算，無網路。
+    raw = await w.wallet.signTransaction(txReq);
+  }
 
   w.status = "pending"; renderWallets();
   // 🔒 唯一離開瀏覽器的機密相關資料：已簽好的 rawTx，送往使用者設定的 RPC。
-  const resp = await state.readProvider.broadcastTransaction(signedRawTx);
-  w.txHash = resp.hash;
-  w.status = "mining"; renderWallets();
+  const resp = await state.readProvider.broadcastTransaction(raw);
+  w.txHash = resp.hash; w.status = "mining"; renderWallets();
   log(`${shortAddr(w.address)} 已廣播 tx ${resp.hash.slice(0, 10)}…`, "");
 
   const receipt = await resp.wait();
@@ -525,56 +671,63 @@ async function fireAll(reason) {
   if (state.wallets.length === 0) { showToast("尚未載入任何錢包。"); return; }
   if (state.firing) return;
   state.firing = true;
+  stopBlockWatch();                 // 開火即停止盯塊
   updateFireButtons();
   log(`🔥 批量開火（${reason}）：${state.wallets.length} 錢包 × 數量 ${state.quantity}`, "warn");
 
-  // gas 只算一次，全錢包共用。
+  // gas 只算一次（供沒有預簽的錢包現簽用）。
   let gas;
   try { gas = await buildGasParams(); }
   catch (e) { log("gas 參數計算失敗：" + shortErr(e), "danger"); state.firing = false; updateFireButtons(); return; }
 
-  // 全錢包並發：各自獨立簽名 + 廣播，一個失敗不影響其他。
+  // 全錢包並發：各自獨立（模擬→）簽名/廣播，一個失敗不影響其他。
   const results = await Promise.allSettled(state.wallets.map((w) => fireOne(w, gas).catch((e) => {
-    w.status = "fail"; w.error = shortErr(e); renderWallets();
+    if (w.status !== "fail") { w.status = "fail"; w.error = shortErr(e); }
+    renderWallets();
     log(`${shortAddr(w.address)} 失敗：${w.error}`, "danger");
     throw e;
   })));
   const ok = results.filter((r) => r.status === "fulfilled").length;
   log(`批量開火結束：${ok}/${state.wallets.length} 成功送出`, ok ? "ok" : "danger");
   showToast(`開火結束：${ok}/${state.wallets.length} 成功`);
-  state.firing = false;
+  state.armed = false; state.firing = false;
+  setDetect(null);
   updateFireButtons();
-}
-
-function maybeAutoFire() {
-  if (!state.armed || state.firing) return;
-  const data = state.data;
-  if (!computeIsActive(data.phase, data)) return;
-  if (state.firedForPhase === data.currentPhaseId) return; // 此 phase 已開過火
-  state.firedForPhase = data.currentPhaseId;
-  log(`🎯 偵測到 PHASE ${data.currentPhaseId} 進入 LIVE → 自動開火`, "ok");
-  showToast("🎯 開賣偵測到，自動批量開火！");
-  fireAll("自動偵測");
 }
 
 // -------------------------------------------------------------- ARM / DISARM
-function arm() {
+async function arm() {
   const data = state.data;
   if (state.wallets.length === 0) { showToast("先載入錢包再待命。"); return; }
   if (!data || !data.phase) { showToast("尚無 phase，無法待命。"); return; }
+  if (data.phase.phaseType === 1 && !state.wallets.every((w) => w.proof && w.proofFor === proofKeyFor(w))) {
+    showToast("白名單 phase：請先為所有錢包抓 proof 再待命。"); return;
+  }
   state.armed = true;
   state.firedForPhase = null;
-  log(`⏻ 已進入待命：偵測到 PHASE ${data.currentPhaseId} 開賣即自動批量開火（輪詢 ${POLL_MS_ARMED / 1000}s）`, "warn");
-  startPolling();          // 切到較快輪詢
   updateFireButtons();
-  maybeAutoFire();         // 若當下已 LIVE，立即開火
+  setDetect("watch", "預簽全部交易中…");
+  log("⏻ 進入待命：預簽全部交易 + WSS 盯塊 + 每塊模擬偵測開售，一開自動並發廣播。", "warn");
+
+  const signed = await presignAll();
+  if (!state.armed) return;                 // 預簽期間被解除
+  if (signed === 0) { log("無任何交易可預簽 → 解除待命", "danger"); disarm("預簽失敗"); return; }
+
+  startBlockWatch();
+  checkOpenAndFire("初始");                  // 若當下已開，立即開火
 }
 
 function disarm(reason) {
-  if (!state.armed) { updateFireButtons?.(); return; }
+  const was = state.armed;
   state.armed = false;
-  log(`⏹ 解除待命${reason ? "（" + reason + "）" : ""}`, "");
-  startPolling();          // 回到慢輪詢
+  stopBlockWatch();
+  setDetect(null);
+  // 清掉預簽交易（避免日後用到過期 nonce/gas）
+  for (const w of state.wallets) {
+    if (w.signedRawTx) { w.signedRawTx = null; if (w.status === "armed") w.status = "idle"; }
+  }
+  if (was) log(`⏹ 解除待命${reason ? "（" + reason + "）" : ""}`, "");
+  renderWallets();
   updateFireButtons();
 }
 
@@ -583,7 +736,6 @@ function updateFireButtons() {
   const data = state.data;
   const hasWallets = state.wallets.length > 0;
   const hasPhase = !!(data && data.phase);
-  const isActive = data ? computeIsActive(data.phase, data) : false;
 
   dom.armBtn.disabled = !hasWallets || !hasPhase || state.firing;
   dom.armBtn.textContent = state.armed ? "⏹ DISARM 解除待命" : "⏻ ARM 待命自動搶";
@@ -595,10 +747,10 @@ function updateFireButtons() {
   let hint = "";
   if (!hasWallets) hint = "先載入至少一個燃燒錢包。";
   else if (!hasPhase) hint = "先 LOAD 目標合約、等待鏈上 phase 讀取。";
+  else if (state.armed) hint = "⏻ 待命中：已預簽並盯塊，模擬偵測到開售即自動並發廣播。可按 DISARM 解除。";
   else if (data.didMintEnd) hint = "此合約已售罄結束——開火會 revert（適合拿測試錢包驗流程）。";
-  else if (data.phase.phaseType === 1) hint = "白名單 phase：先為所有錢包抓 proof 再開火。";
-  else if (!isActive) hint = "目前非 LIVE。可先『ARM 待命』，開賣自動開火；或『立即開火』手動測試。";
-  else hint = "🟢 LIVE！可立即批量開火。";
+  else if (data.phase.phaseType === 1) hint = "白名單 phase：先為所有錢包抓 proof 再 ARM / 開火。";
+  else hint = "可『ARM 待命』盯塊自動搶；或『立即開火』手動送出。";
   dom.fireHint.textContent = hint;
 }
 
@@ -631,12 +783,14 @@ function wire() {
     dom.autoMultField.style.display = manual ? "none" : "";
   });
 
+  dom.floorPriceInput.addEventListener("input", updateSummary);
+
   dom.fetchProofsBtn.addEventListener("click", fetchAllProofs);
 
   dom.armBtn.addEventListener("click", () => { state.armed ? disarm("手動") : arm(); });
   dom.fireBtn.addEventListener("click", () => {
     const data = state.data;
-    const per = unitCost() * BigInt(state.quantity);
+    const per = effectiveUnit() * BigInt(state.quantity);
     const total = per * BigInt(state.wallets.length);
     const msg = `即將用 ${state.wallets.length} 個錢包各鑄 ${state.quantity} 個。\n` +
       `每錢包成本 ${fmtEth(per)}，總計約 ${fmtEth(total)}（不含 gas）。\n` +

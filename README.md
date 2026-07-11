@@ -35,11 +35,13 @@ python3 -m http.server 8799
 - **產生測試錢包**：`ethers.Wallet.createRandom()` 一鍵產生全新測試錢包，安全試玩 UI（無資產）。
 - **即時鏈上狀態**：collection 名稱/供給/是否售罄/暫停、`collectorFee`、`MAX_MINT_PER_TX`；當前 phase 型別/開賣倒數/單價/每址上限/root。
 - **Gas 控制**：自動（依鏈上 `baseFee` × 倍率 + priority）或手動指定 `maxFeePerGas`/`maxPriorityFeePerGas`/`gasLimit`。Robinhood Chain 為 EIP-1559。
+- **保底價**：實付單價取 `max(鏈上即時價, 保底價)`，絕不付少導致 revert 白燒 gas。
 - **批量開火**：
   - `🔥 立即批量開火` — 所有錢包並發、各自本機簽名並廣播；送出前彈確認框（顯示錢包數與總成本）。
-  - `⏻ ARM 待命自動搶` — 進入 2.5s 快輪詢，偵測到 phase 進入 LIVE 立即自動批量開火（每個 phase 只開一次）。
+  - `⏻ ARM 待命自動搶` — **待命時預簽全部交易**，用 **WSS 盯塊**（事件驅動、非輪詢）＋**每塊 `eth_call` 模擬 mint** 偵測開售（不靠時間戳，支援 `mintStart=0` 手動開售）；一偵測到開售，全錢包**同刻並發廣播**預簽交易。WSS 連不上自動退回 3s 快輪詢。
+- **送前模擬**：可勾選，廣播前先 `eth_call` 確認能 mint，不能就跳過該錢包（防公售沒開白燒 gas）。
 - **白名單**：allowlist phase 自動顯示查詢區，`為所有錢包抓 proof` 逐一向 mintbay 取各地址 merkle proof，走 `allowlistMint(qty, proof)`。
-- **逐錢包狀態表**：待命 / 簽名中 / 廣播中 / 上鏈中 / 成功 / 失敗 + tx 連結；活動 log。
+- **逐錢包狀態表**：待命 / 預簽待命 / 模擬中 / 簽名中 / 廣播中 / 上鏈中 / 成功 / 失敗 + tx 連結；活動 log。
 
 ---
 
