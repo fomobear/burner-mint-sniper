@@ -193,6 +193,11 @@
           <span>Gas Limit / 錢包</span>
           <input type="number" id="gasLimitInput" class="mono-input" value="250000" min="21000" step="1000" inputmode="numeric">
         </label>
+
+        <label class="field">
+          <span>保底價 ETH/個（實付取 max(鏈上即時, 保底)）</span>
+          <input type="number" id="floorPriceInput" class="mono-input" value="0" min="0" step="0.0001" inputmode="decimal">
+        </label>
       </div>
 
       <!-- 白名單區塊：allowlist phase 才顯示 -->
@@ -205,10 +210,21 @@
         <p class="allowlist-status" id="allowlistStatus"></p>
       </div>
 
+      <label class="sim-toggle">
+        <input type="checkbox" id="simBeforeSendChk" checked>
+        <span class="switch-mini"></span>
+        <span>送交易前先<strong>模擬</strong>（eth_call 確認能 mint，防公售沒開白燒 gas）</span>
+      </label>
+
       <div class="fire-summary">
         <div class="summary-item"><span class="summary-label">參戰錢包</span><span class="summary-val mono" id="sumWallets">0</span></div>
         <div class="summary-item"><span class="summary-label">每錢包成本</span><span class="summary-val mono" id="sumPerWallet">0 ETH</span></div>
         <div class="summary-item"><span class="summary-label">總計（不含 gas）</span><span class="summary-val mono" id="sumTotal">0 ETH</span></div>
+      </div>
+
+      <div class="detect-bar" id="detectBar" hidden>
+        <span class="detect-dot"></span>
+        <span class="detect-text mono" id="detectText">待命中</span>
       </div>
 
       <div class="fire-buttons">

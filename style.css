@@ -247,6 +247,23 @@ select.mono-input { cursor: pointer; }
 .fire-buttons { display: flex; gap: 12px; flex-wrap: wrap; }
 .mint-hint { font-size: 12px; color: var(--ink-dim); margin: 0; min-height: 16px; }
 
+/* 送前模擬 toggle */
+.sim-toggle { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--ink-dim); cursor: pointer; }
+.sim-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.sim-toggle .switch-mini { width: 34px; height: 18px; border-radius: 999px; background: rgba(0,0,0,0.5); border: 1px solid var(--panel-line); position: relative; flex: none; transition: all 0.16s; }
+.sim-toggle .switch-mini::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink-dim); transition: all 0.16s; }
+.sim-toggle input:checked + .switch-mini { background: rgba(200,255,77,0.25); border-color: var(--accent-dim); }
+.sim-toggle input:checked + .switch-mini::after { left: 18px; background: var(--accent); }
+.sim-toggle strong { color: var(--accent); }
+
+/* 盯塊偵測狀態列 */
+.detect-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid rgba(88,224,216,0.3); border-radius: var(--radius); background: rgba(88,224,216,0.05); }
+.detect-bar .detect-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: livepulse 1.1s infinite; flex: none; }
+.detect-bar[data-mode="open"] { border-color: var(--ok); background: rgba(123,255,142,0.1); }
+.detect-bar[data-mode="open"] .detect-dot { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.detect-text { font-size: 12px; color: var(--cyan); }
+.detect-bar[data-mode="open"] .detect-text { color: var(--ok); }
+
 /* ---- log ---- */
 .log-body { max-height: 220px; overflow-y: auto; font-size: 12px; display: flex; flex-direction: column; }
 .log-line { padding: 3px 0; border-bottom: 1px solid rgba(200,255,77,0.05); color: var(--ink-dim); word-break: break-word; }
