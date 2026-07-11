@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BURNER SNIPER // 燃燒錢包批量搶鑄主控台</title>
+<meta name="description" content="燃燒錢包批量搶鑄 dApp — 純前端、私鑰只在本機瀏覽器記憶體、ethers 本地簽名、零外傳。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='%23c8ff4d' stroke-width='8'/%3E%3Ccircle cx='50' cy='50' r='10' fill='%23c8ff4d'/%3E%3Cline x1='50' y1='2' x2='50' y2='24' stroke='%23c8ff4d' stroke-width='8'/%3E%3Cline x1='50' y1='76' x2='50' y2='98' stroke='%23c8ff4d' stroke-width='8'/%3E%3Cline x1='2' y1='50' x2='24' y2='50' stroke='%23c8ff4d' stroke-width='8'/%3E%3Cline x1='76' y1='50' x2='98' y2='50' stroke='%23c8ff4d' stroke-width='8'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+<div class="grid-bg" aria-hidden="true"></div>
+<div class="vignette" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◎</span>
+    <span class="brand-text">BURNER&nbsp;SNIPER<span class="brand-sub">// 批量搶鑄主控台</span></span>
+  </div>
+  <div class="topbar-right">
+    <div class="chain-badge" id="chainBadge" data-state="unknown">
+      <span class="dot"></span>
+      <span id="chainBadgeText">CHAIN —</span>
+    </div>
+    <button class="btn btn-ghost" id="settingsBtn" type="button" aria-label="連線設定">⚙ RPC</button>
+  </div>
+</header>
+
+<!-- 安全聲明橫幅 — 永久顯示，不可關閉 -->
+<section class="security-banner" role="note">
+  <span class="sec-icon" aria-hidden="true">🔒</span>
+  <div class="sec-text">
+    <strong>純前端 · 私鑰不外傳。</strong>
+    私鑰只存在你這台瀏覽器的記憶體，只用來以 ethers 在本機簽名；離開瀏覽器的只有「已簽好的交易」送往你設定的 RPC。
+    本頁<strong>不</strong>把私鑰寫入 localStorage、不進網址、不經任何 fetch/XHR/WebSocket 外送。
+    仍請只用<strong>燃燒錢包（用完即丟）</strong>、建議把本資料夾下載後於本機開啟執行。程式為單一資料夾純靜態檔，可自行審閱。
+  </div>
+</section>
+
+<dialog id="settingsDialog" class="settings-dialog">
+  <form method="dialog" class="settings-form">
+    <h2>連線設定</h2>
+    <label class="field">
+      <span>RPC URL（Robinhood Chain，chainId 4663）</span>
+      <input type="text" id="rpcInput" class="mono-input" spellcheck="false" autocomplete="off">
+    </label>
+    <p class="hint">預設用交接規格提供的共用 Alchemy key，會被限流；批量搶鑄請務必換成你自己的 Alchemy Robinhood Chain key，否則多錢包並發會被擋。</p>
+    <div class="settings-actions">
+      <button type="button" class="btn btn-ghost" id="resetRpcBtn">還原預設</button>
+      <button type="submit" class="btn btn-accent" id="saveSettingsBtn">套用並重連</button>
+    </div>
+  </form>
+</dialog>
+
+<main class="app">
+
+  <!-- ========================= TARGET ========================= -->
+  <section class="panel target-bar">
+    <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+    <label class="target-label" for="contractInput">目標合約 TARGET</label>
+    <input type="text" id="contractInput" class="mono-input target-input" spellcheck="false" autocomplete="off" placeholder="0x… （可切換到未來的 mintbay drop）">
+    <button class="btn btn-accent" id="loadBtn" type="button">LOAD</button>
+    <span class="target-status mono" id="targetStatus" aria-live="polite"></span>
+  </section>
+
+  <!-- ==================== COLLECTION + PHASE ==================== -->
+  <section class="grid-2">
+    <div class="panel card" id="collectionCard">
+      <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+      <header class="card-head">
+        <h2>COLLECTION STATUS</h2>
+        <div class="badges" id="collectionBadges"></div>
+      </header>
+      <div class="card-body">
+        <div class="collection-id">
+          <span class="collection-name" id="collectionName">—</span>
+          <span class="collection-symbol mono" id="collectionSymbol"></span>
+        </div>
+        <div class="progress-block">
+          <div class="progress-labels">
+            <span>SUPPLY</span>
+            <span class="mono" id="supplyNumbers">— / —</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" id="supplyFill"></div></div>
+        </div>
+        <dl class="kv-list">
+          <div><dt>MINTING PAUSED</dt><dd id="pausedVal" class="mono">—</dd></div>
+          <div><dt>MINT ENDED</dt><dd id="endedVal" class="mono">—</dd></div>
+          <div><dt>MAX / TX</dt><dd id="maxTxVal" class="mono">—</dd></div>
+          <div><dt>COLLECTOR FEE</dt><dd id="feeVal" class="mono">—</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <div class="panel card" id="phaseCard" data-active="false">
+      <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+      <header class="card-head">
+        <h2>ACTIVE PHASE</h2>
+        <span class="phase-type-badge" id="phaseTypeBadge">—</span>
+      </header>
+      <div class="card-body">
+        <div class="phase-meta">
+          <span class="phase-id mono" id="phaseIdVal">PHASE —</span>
+          <span class="phase-state-badge" id="phaseStateBadge">—</span>
+        </div>
+        <div class="countdown">
+          <span class="countdown-label" id="countdownLabel">—</span>
+          <span class="countdown-digits mono" id="countdownDigits">--:--:--</span>
+        </div>
+        <dl class="kv-list">
+          <div><dt>PRICE /件</dt><dd class="mono" id="priceVal">—</dd></div>
+          <div><dt>MAX / ADDRESS</dt><dd class="mono" id="maxAddrVal">—</dd></div>
+          <div><dt>PHASE MINTED</dt><dd class="mono" id="phaseMintedVal">—</dd></div>
+          <div><dt>ROOT</dt><dd class="mono" id="rootVal">—</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================= WALLETS ========================= -->
+  <section class="panel wallets-panel">
+    <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+    <header class="card-head">
+      <h2>燃燒錢包 BURNER WALLETS</h2>
+      <span class="wallet-count mono" id="walletCount">0 錢包</span>
+    </header>
+    <div class="wallets-body">
+      <label class="field">
+        <span>貼上私鑰，一行一個（0x… 64 hex）。<span class="warn-text">只用燃燒錢包！</span>私鑰僅存在本機記憶體，不會被儲存或上傳。</span>
+        <textarea id="pkInput" class="mono-input pk-input" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"
+          placeholder="0xabc…&#10;0xdef…&#10;# 井號開頭的行會被忽略（可寫備註）"></textarea>
+      </label>
+      <div class="wallets-actions">
+        <button class="btn btn-accent" id="loadWalletsBtn" type="button">載入錢包</button>
+        <button class="btn btn-ghost" id="genTestBtn" type="button" title="用 ethers.Wallet.createRandom() 產生一個全新測試錢包，安全試玩 UI">＋ 產生測試錢包</button>
+        <button class="btn btn-ghost" id="refreshBalBtn" type="button">刷新餘額</button>
+        <button class="btn btn-danger" id="clearWalletsBtn" type="button">🗑 清除所有私鑰</button>
+      </div>
+      <div class="wallet-table-wrap">
+        <table class="wallet-table" id="walletTable">
+          <thead>
+            <tr><th>#</th><th>地址</th><th>餘額</th><th>白名單</th><th>狀態</th><th>TX</th></tr>
+          </thead>
+          <tbody id="walletTbody">
+            <tr class="empty-row"><td colspan="6">尚未載入任何錢包。貼私鑰或按「產生測試錢包」。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= FIRE CONTROL ======================= -->
+  <section class="panel fire-panel" id="firePanel">
+    <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+    <header class="card-head"><h2>FIRE CONTROL 批量開火</h2></header>
+    <div class="fire-body">
+
+      <div class="fire-grid">
+        <label class="field">
+          <span>每個錢包鑄造數量</span>
+          <div class="qty-control">
+            <button class="qty-btn" id="qtyMinus" type="button" aria-label="減少">&minus;</button>
+            <input type="number" id="qtyInput" class="qty-input mono" value="1" min="1" step="1" inputmode="numeric">
+            <button class="qty-btn" id="qtyPlus" type="button" aria-label="增加">+</button>
+            <span class="qty-max mono" id="qtyMaxHint"></span>
+          </div>
+        </label>
+
+        <label class="field gas-field">
+          <span>Gas 模式</span>
+          <select id="gasMode" class="mono-input">
+            <option value="auto">自動（依鏈上 baseFee ×倍率）</option>
+            <option value="manual">手動指定</option>
+          </select>
+        </label>
+
+        <label class="field" id="autoMultField">
+          <span>自動倍率（maxFee = baseFee × 倍率）</span>
+          <input type="number" id="autoMult" class="mono-input" value="2" min="1" step="0.5" inputmode="decimal">
+        </label>
+
+        <label class="field manual-gas" data-manual="0">
+          <span>maxFeePerGas (gwei)</span>
+          <input type="number" id="maxFeeInput" class="mono-input" value="0.2" min="0" step="0.01" inputmode="decimal">
+        </label>
+        <label class="field manual-gas" data-manual="0">
+          <span>maxPriorityFeePerGas (gwei)</span>
+          <input type="number" id="prioFeeInput" class="mono-input" value="0" min="0" step="0.001" inputmode="decimal">
+        </label>
+
+        <label class="field">
+          <span>Gas Limit / 錢包</span>
+          <input type="number" id="gasLimitInput" class="mono-input" value="250000" min="21000" step="1000" inputmode="numeric">
+        </label>
+      </div>
+
+      <!-- 白名單區塊：allowlist phase 才顯示 -->
+      <div class="allowlist-box" id="allowlistBox" hidden>
+        <label for="phaseNameInput">白名單 PHASE 名稱（依 mintbay 後台，例如 Allowlist / OG / Team Mint）</label>
+        <div class="allowlist-row">
+          <input type="text" id="phaseNameInput" class="mono-input" placeholder="輸入 phase 名稱">
+          <button class="btn btn-ghost" id="fetchProofsBtn" type="button">為所有錢包抓 proof</button>
+        </div>
+        <p class="allowlist-status" id="allowlistStatus"></p>
+      </div>
+
+      <div class="fire-summary">
+        <div class="summary-item"><span class="summary-label">參戰錢包</span><span class="summary-val mono" id="sumWallets">0</span></div>
+        <div class="summary-item"><span class="summary-label">每錢包成本</span><span class="summary-val mono" id="sumPerWallet">0 ETH</span></div>
+        <div class="summary-item"><span class="summary-label">總計（不含 gas）</span><span class="summary-val mono" id="sumTotal">0 ETH</span></div>
+      </div>
+
+      <div class="fire-buttons">
+        <button class="btn btn-arm" id="armBtn" type="button" disabled>⏻ ARM 待命自動搶</button>
+        <button class="btn btn-mint" id="fireBtn" type="button" disabled>🔥 立即批量開火</button>
+      </div>
+      <p class="mint-hint" id="fireHint"></p>
+    </div>
+  </section>
+
+  <!-- ========================= LOG ========================= -->
+  <section class="panel log-panel">
+    <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+    <header class="card-head"><h2>ACTIVITY LOG</h2><button class="btn btn-ghost btn-sm" id="clearLogBtn" type="button">清除</button></header>
+    <div class="log-body mono" id="logBody"></div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<footer class="app-footer">
+  <p>純前端 dApp · 私鑰只在本機瀏覽器記憶體、以 ethers 本地簽名、零外傳。合約數字皆為鏈上輪詢即時讀取。ethers v6.17.0 本地內建（未改動、未走 CDN）。僅供燃燒錢包用完即丟。</p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
