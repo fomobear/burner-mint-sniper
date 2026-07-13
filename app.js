@@ -17,6 +17,7 @@
 // ============================================================================
 
 import * as ethers from "./vendor/ethers.min.js";
+import { formatPhaseOptionLabel } from "./phaseUtils.js";
 
 // -------------------------------------------------------------- 常數
 const CHAIN_ID = 4663;
@@ -57,10 +58,13 @@ const dom = {
   rpcInput: el("rpcInput"), resetRpcBtn: el("resetRpcBtn"),
   settingsForm: document.querySelector(".settings-form"),
   contractInput: el("contractInput"), loadBtn: el("loadBtn"), targetStatus: el("targetStatus"),
+  modeRadios: document.querySelectorAll('input[name="mintMode"]'),
+  phaseSelectorPanel: el("phaseSelectorPanel"), loadPhasesBtn: el("loadPhasesBtn"),
+  phaseSelect: el("phaseSelect"), phaseSelectorStatus: el("phaseSelectorStatus"),
   collectionBadges: el("collectionBadges"), collectionName: el("collectionName"), collectionSymbol: el("collectionSymbol"),
   supplyNumbers: el("supplyNumbers"), supplyFill: el("supplyFill"),
   pausedVal: el("pausedVal"), endedVal: el("endedVal"), maxTxVal: el("maxTxVal"), feeVal: el("feeVal"),
-  phaseCard: el("phaseCard"), phaseIdVal: el("phaseIdVal"), phaseTypeBadge: el("phaseTypeBadge"),
+  phaseCard: el("phaseCard"), phaseCardTitle: el("phaseCardTitle"), phaseIdVal: el("phaseIdVal"), phaseTypeBadge: el("phaseTypeBadge"),
   phaseStateBadge: el("phaseStateBadge"), countdownLabel: el("countdownLabel"), countdownDigits: el("countdownDigits"),
   priceVal: el("priceVal"), maxAddrVal: el("maxAddrVal"), phaseMintedVal: el("phaseMintedVal"), rootVal: el("rootVal"),
   pkInput: el("pkInput"), loadWalletsBtn: el("loadWalletsBtn"), genTestBtn: el("genTestBtn"),
@@ -98,6 +102,9 @@ const state = {
   armed: false,
   firedForPhase: null,          // 已對哪個 phaseId 自動開火過，避免重複
   firing: false,
+  mintMode: "public",           // public（維持現況） | phase（選擇 phase）
+  allPhases: [],                // 「選擇 Phase」模式：讀到的全部 phase（依 phases(0..phaseCount-1) 順序）
+  selectedPhaseId: null,        // 「選擇 Phase」模式：使用者選定的 phase index
 };
 
 let walletSeq = 0;
@@ -133,6 +140,118 @@ function normalizeAddress(input) {
   return ethers.getAddress(t);
 }
 
+// -------------------------------------------------------------- mint 模式
+// 目前「實際生效」的 phase：
+//   - 公開 Mint 模式：合約當前 active phase（維持現況，來自 pollOnce 讀到的 data.phase）。
+//   - 選擇 Phase 模式：使用者在下拉選單選定的 phase（僅用來決定價格/是否抓 proof/ARM 等哪個時間窗；
+//     mintbay 合約仍依自己的 block.timestamp 判定真正 live 的 phase，前端無法指定 phase 去鑄）。
+function effectivePhase() {
+  const data = state.data;
+  if (!data) return null;
+  if (state.mintMode === "phase") {
+    if (state.selectedPhaseId == null) return null;
+    return state.allPhases[state.selectedPhaseId] || null;
+  }
+  return data.phase;
+}
+
+function setMintMode(mode) {
+  if (state.mintMode === mode) return;
+  if (state.armed) disarm("切換 mint 模式");
+  state.mintMode = mode;
+  dom.phaseSelectorPanel.hidden = mode !== "phase";
+  render();
+  log(`模式切換：${mode === "phase" ? "選擇 Phase" : "公開 Mint"}`, "");
+}
+
+// 讀取全部 phase：phaseCount() → Promise.all(phases(0..count-1))。
+// 純讀（eth_call），不影響「公開 Mint」模式行為。
+async function loadAllPhases() {
+  const c = state.readContract;
+  if (!c) {
+    dom.phaseSelectorStatus.textContent = "請先 LOAD 目標合約。";
+    dom.phaseSelectorStatus.dataset.tone = "error";
+    return;
+  }
+  dom.phaseSelectorStatus.textContent = "讀取 phase 列表中…";
+  dom.phaseSelectorStatus.dataset.tone = "pending";
+  try {
+    const count = Number(await c.phaseCount());
+    if (!count) {
+      state.allPhases = [];
+      state.selectedPhaseId = null;
+      renderPhaseSelect();
+      dom.phaseSelectorStatus.textContent = "此合約尚未設定任何 phase。";
+      dom.phaseSelectorStatus.dataset.tone = "warn";
+      return;
+    }
+    const raws = await Promise.all(Array.from({ length: count }, (_, i) => c.phases(i)));
+    state.allPhases = raws.map((raw) => ({
+      phaseType: Number(raw[0]), startTime: Number(raw[1]), endTime: Number(raw[2]),
+      mintPrice: raw[3], maxPerAddress: Number(raw[4]), maxSupply: Number(raw[5]),
+      mintedInPhase: Number(raw[6]), allowlistRoot: raw[7],
+    }));
+    if (state.selectedPhaseId != null && state.selectedPhaseId >= state.allPhases.length) state.selectedPhaseId = null;
+    renderPhaseSelect();
+    dom.phaseSelectorStatus.textContent = `讀取完成：共 ${count} 個 phase。`;
+    dom.phaseSelectorStatus.dataset.tone = "ok";
+    log(`讀取 phase 列表：phaseCount()=${count}，已 Promise.all 讀完全部 phases()`, "ok");
+    // 供驗收核對：完整結構化印在 devtools console。
+    console.log(`[phase-select] 讀取到 ${count} 個 phase`, state.allPhases.map((p, i) => ({
+      index: i, phaseType: p.phaseType, mintPriceWei: p.mintPrice.toString(),
+      startTime: p.startTime, endTime: p.endTime, maxPerAddress: p.maxPerAddress,
+      maxSupply: p.maxSupply, mintedInPhase: p.mintedInPhase, allowlistRoot: p.allowlistRoot,
+    })));
+  } catch (err) {
+    state.allPhases = [];
+    state.selectedPhaseId = null;
+    renderPhaseSelect();
+    dom.phaseSelectorStatus.textContent = "讀取失敗：" + shortErr(err);
+    dom.phaseSelectorStatus.dataset.tone = "error";
+  }
+}
+
+function renderPhaseSelect() {
+  const sel = dom.phaseSelect;
+  if (!sel) return;
+  sel.innerHTML = "";
+  if (!state.allPhases.length) {
+    const opt = document.createElement("option");
+    opt.value = ""; opt.textContent = "— 尚無 phase 資料，請先讀取 —";
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  const placeholder = document.createElement("option");
+  placeholder.value = ""; placeholder.textContent = "— 請選擇一個 phase —";
+  sel.appendChild(placeholder);
+
+  const data = state.data;
+  const collectorFee = data?.collectorFee ?? 0n;
+  const currentPhaseId = data ? data.currentPhaseId : -1;
+  const n = nowSec();
+  state.allPhases.forEach((phase, i) => {
+    const priceStr = Number(ethers.formatEther(phase.mintPrice + collectorFee)).toFixed(4);
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = formatPhaseOptionLabel(i, phase, priceStr, currentPhaseId, n);
+    sel.appendChild(opt);
+  });
+  sel.value = state.selectedPhaseId != null && state.allPhases[state.selectedPhaseId] ? String(state.selectedPhaseId) : "";
+}
+
+function onPhaseSelectChange() {
+  const v = dom.phaseSelect.value;
+  const newId = v === "" ? null : Number(v);
+  if (newId === state.selectedPhaseId) return;
+  if (state.armed) disarm("切換選定 phase");
+  state.selectedPhaseId = newId;
+  state.firedForPhase = null; // 換了選定 phase，重置「已對哪個 phase 開過火」的記錄
+  render();
+  log(newId == null ? "已取消選定 phase" : `已選定 Phase ${newId}`, "");
+}
+
 // -------------------------------------------------------------- provider / 讀鏈
 function initReadProvider() {
   state.readProvider = new ethers.JsonRpcProvider(state.rpcUrl, { chainId: CHAIN_ID, name: "robinhood" }, { staticNetwork: true });
@@ -147,8 +266,11 @@ async function loadContract() {
 
   initReadProvider();
   state.readContract = new ethers.Contract(state.contractAddress, ABI, state.readProvider);
-  // 目標切換：重掛所有錢包到新 provider、清白名單快取
+  // 目標切換：重掛所有錢包到新 provider、清白名單快取、清選擇 Phase 模式的舊 phase 列表
   for (const w of state.wallets) { w.wallet = w.wallet.connect(state.readProvider); w.proof = null; w.proofFor = null; }
+  state.allPhases = [];
+  state.selectedPhaseId = null;
+  renderPhaseSelect();
   disarm("目標合約已切換");
 
   stopPolling();
@@ -205,6 +327,10 @@ async function pollOnce(mySeq) {
     dom.chainBadge.dataset.state = "ok";
     dom.chainBadgeText.textContent = `${CHAIN_NAME} (${CHAIN_ID})`;
     render();
+    // 「選擇 Phase」模式：每次鏈上快照真正更新時才重畫下拉選單（更新 ★目前 / 窗口狀態）。
+    // 刻意不放進 render()：render() 也被每秒的 tickTimer 呼叫（只為了刷新倒數），
+    // 若在那裡重建 <select> 的 <option>，使用者操作到一半下拉選單會被打斷重建。
+    if (state.mintMode === "phase" && state.allPhases.length) renderPhaseSelect();
     if (state.armed) checkOpenAndFire("poll-refresh");
   } catch (err) {
     setTargetStatus("讀取失敗：" + shortErr(err), "error");
@@ -253,19 +379,23 @@ function render() {
   else if (data.mintingPaused) addBadge("PAUSED", "warn");
   else addBadge("OPERATIONAL", "ok");
 
-  const phase = data.phase;
+  const phase = effectivePhase();
   const isActive = computeIsActive(phase, data);
   dom.phaseCard.dataset.active = String(isActive);
+  dom.phaseCardTitle.textContent = state.mintMode === "phase" ? "選定 PHASE" : "ACTIVE PHASE";
 
   if (!phase) {
     dom.phaseIdVal.textContent = "PHASE —";
     dom.phaseTypeBadge.textContent = "無 PHASE";
     dom.phaseStateBadge.textContent = "—"; dom.phaseStateBadge.dataset.state = "ended";
-    dom.countdownLabel.textContent = "尚未設定任何 phase"; dom.countdownDigits.textContent = "--:--:--";
+    dom.countdownLabel.textContent = state.mintMode === "phase" ? "尚未選擇 phase（請讀取並選擇）" : "尚未設定任何 phase";
+    dom.countdownDigits.textContent = "--:--:--";
     dom.priceVal.textContent = "—"; dom.maxAddrVal.textContent = "—"; dom.phaseMintedVal.textContent = "—"; dom.rootVal.textContent = "—";
     dom.allowlistBox.hidden = true;
   } else {
-    dom.phaseIdVal.textContent = `PHASE ${data.currentPhaseId} / ${data.phaseCount}`;
+    dom.phaseIdVal.textContent = state.mintMode === "phase"
+      ? `PHASE ${state.selectedPhaseId} / ${data.phaseCount}` + (state.selectedPhaseId === data.currentPhaseId ? " ★目前" : "")
+      : `PHASE ${data.currentPhaseId} / ${data.phaseCount}`;
     dom.phaseTypeBadge.textContent = PHASE_TYPE_LABEL[phase.phaseType] ?? `TYPE ${phase.phaseType}`;
     dom.priceVal.textContent = fmtEth(phase.mintPrice + data.collectorFee);
     dom.maxAddrVal.textContent = phase.maxPerAddress > 0 ? String(phase.maxPerAddress) : "無上限";
@@ -367,8 +497,7 @@ function renderWallets() {
     tb.innerHTML = `<tr class="empty-row"><td colspan="6">尚未載入任何錢包。貼私鑰或按「產生測試錢包」。</td></tr>`;
     return;
   }
-  const data = state.data;
-  const allowlistPhase = data?.phase?.phaseType === 1;
+  const allowlistPhase = effectivePhase()?.phaseType === 1;
   tb.innerHTML = "";
   state.wallets.forEach((w, i) => {
     const tr = document.createElement("tr");
@@ -395,7 +524,8 @@ function renderWallets() {
 function perAddressCap(data) {
   const caps = [];
   if (data.maxPerTx > 0) caps.push(data.maxPerTx);
-  if (data.phase && data.phase.maxPerAddress > 0) caps.push(data.phase.maxPerAddress);
+  const phase = effectivePhase();
+  if (phase && phase.maxPerAddress > 0) caps.push(phase.maxPerAddress);
   return caps.length ? Math.min(...caps) : 99;
 }
 
@@ -417,11 +547,12 @@ function setQuantity(q) {
   updateSummary();
 }
 
-// 鏈上即時單價 = mintPrice + collectorFee
+// 鏈上即時單價 = mintPrice + collectorFee（依模式取「生效 phase」）
 function chainUnit() {
   const data = state.data;
-  if (!data || !data.phase) return 0n;
-  return data.phase.mintPrice + data.collectorFee;
+  const phase = effectivePhase();
+  if (!data || !phase) return 0n;
+  return phase.mintPrice + data.collectorFee;
 }
 // 使用者設的保底單價（ETH/個）
 function floorUnit() {
@@ -494,11 +625,12 @@ async function fetchAllProofs() {
 // eth_call 模擬某錢包的 mint（唯讀、不花錢）。成功=能鑄；revert=沒開/不符資格。
 async function simulateWallet(w) {
   const data = state.data;
-  if (!data || !data.phase || !w) return false;
+  const phase = effectivePhase();
+  if (!data || !phase || !w) return false;
   const qty = state.quantity;
   const value = effectiveUnit() * BigInt(qty);
   let calldata;
-  if (data.phase.phaseType === 1) {
+  if (phase.phaseType === 1) {
     if (!w.proof || w.proofFor !== proofKeyFor(w)) return false;
     calldata = iface.encodeFunctionData("allowlistMint", [qty, w.proof]);
   } else {
@@ -524,17 +656,29 @@ function setDetect(mode, text) {
 }
 
 // 每個新區塊（或安全輪詢）觸發：模擬偵測開售，一開就並發開火。
+// 公開 Mint 模式：不靠時間戳，純靠模擬（維持現況，支援手動開售 mintStart=0）。
+// 選擇 Phase 模式：多一道「時間窗到了才開始模擬」的門檻——鎖定選定 phase，等它的時間窗進入後才嘗試模擬開火。
 async function checkOpenAndFire(source) {
   if (!state.armed || state.firing || state.checking) return;
   const data = state.data;
-  if (!data || !data.phase || data.didMintEnd) return;
-  if (state.firedForPhase === data.currentPhaseId) return;
+  const phase = effectivePhase();
+  if (!data || !phase || data.didMintEnd) return;
+
+  const phaseKey = state.mintMode === "phase" ? `sel-${state.selectedPhaseId}` : data.currentPhaseId;
+  if (state.firedForPhase === phaseKey) return;
+
+  if (state.mintMode === "phase") {
+    const n = nowSec();
+    const windowOpen = phase.startTime > 0 && n >= phase.startTime && n < phase.endTime;
+    if (!windowOpen) { setDetect("watch", `盯塊中（${source}）…等待選定 Phase ${state.selectedPhaseId} 時間窗`); return; }
+  }
+
   state.checking = true;
   let open = false;
   try { open = await simulateOpen(); } catch { open = false; } finally { state.checking = false; }
   if (!state.armed || state.firing) return;
   if (open) {
-    state.firedForPhase = data.currentPhaseId;
+    state.firedForPhase = phaseKey;
     setDetect("open", "模擬成功 → 開售！並發開火");
     log(`🎯 模擬 mint 成功（${source}）→ 判定已開售 → 批量開火`, "ok");
     showToast("🎯 開售偵測到，自動並發開火！");
@@ -581,10 +725,9 @@ function stopBlockWatch() {
 // -------------------------------------------------------------- 預簽（待命時把全部交易先簽好）
 // 🔒 預簽 = 本機用私鑰把交易簽成 rawTx 字串存記憶體，開售當下只需廣播，延遲最低。
 async function presignAll() {
-  const data = state.data;
   const qty = state.quantity;
   const value = effectiveUnit() * BigInt(qty);
-  const isAllowlist = data.phase.phaseType === 1;
+  const isAllowlist = effectivePhase().phaseType === 1;
   let gas;
   try { gas = await buildGasParams(); }
   catch (e) { log("gas 計算失敗，無法預簽：" + shortErr(e), "danger"); return 0; }
@@ -620,7 +763,6 @@ async function presignAll() {
 // -------------------------------------------------------------- 開火（核心）
 // 對單一錢包：（可選）送前模擬 → 用預簽 rawTx 或本機現簽 → 廣播已簽 rawTx。
 async function fireOne(w, gas) {
-  const data = state.data;
   const qty = state.quantity;
   const value = effectiveUnit() * BigInt(qty);
 
@@ -634,7 +776,7 @@ async function fireOne(w, gas) {
   // 優先用待命時的預簽交易；沒有就現場本機簽。
   let raw = w.signedRawTx;
   if (!raw) {
-    const isAllowlist = data.phase.phaseType === 1;
+    const isAllowlist = effectivePhase().phaseType === 1;
     let calldata;
     if (isAllowlist) {
       if (!w.proof || w.proofFor !== proofKeyFor(w)) throw new Error("無有效 merkle proof");
@@ -667,7 +809,7 @@ async function fireOne(w, gas) {
 
 async function fireAll(reason) {
   const data = state.data;
-  if (!data || !data.phase) { showToast("尚無可鑄造的 phase。"); return; }
+  if (!data || !effectivePhase()) { showToast("尚無可鑄造的 phase。"); return; }
   if (state.wallets.length === 0) { showToast("尚未載入任何錢包。"); return; }
   if (state.firing) return;
   state.firing = true;
@@ -698,9 +840,11 @@ async function fireAll(reason) {
 // -------------------------------------------------------------- ARM / DISARM
 async function arm() {
   const data = state.data;
+  const phase = effectivePhase();
   if (state.wallets.length === 0) { showToast("先載入錢包再待命。"); return; }
-  if (!data || !data.phase) { showToast("尚無 phase，無法待命。"); return; }
-  if (data.phase.phaseType === 1 && !state.wallets.every((w) => w.proof && w.proofFor === proofKeyFor(w))) {
+  if (state.mintMode === "phase" && state.selectedPhaseId == null) { showToast("選擇 Phase 模式：請先選定一個 phase 再待命。"); return; }
+  if (!data || !phase) { showToast("尚無 phase，無法待命。"); return; }
+  if (phase.phaseType === 1 && !state.wallets.every((w) => w.proof && w.proofFor === proofKeyFor(w))) {
     showToast("白名單 phase：請先為所有錢包抓 proof 再待命。"); return;
   }
   state.armed = true;
@@ -734,8 +878,9 @@ function disarm(reason) {
 // -------------------------------------------------------------- 按鈕狀態
 function updateFireButtons() {
   const data = state.data;
+  const phase = effectivePhase();
   const hasWallets = state.wallets.length > 0;
-  const hasPhase = !!(data && data.phase);
+  const hasPhase = !!phase;
 
   dom.armBtn.disabled = !hasWallets || !hasPhase || state.firing;
   dom.armBtn.textContent = state.armed ? "⏹ DISARM 解除待命" : "⏻ ARM 待命自動搶";
@@ -746,10 +891,12 @@ function updateFireButtons() {
 
   let hint = "";
   if (!hasWallets) hint = "先載入至少一個燃燒錢包。";
+  else if (state.mintMode === "phase" && state.selectedPhaseId == null) hint = "選擇 Phase 模式：請先按「讀取 PHASE 列表」並選定一個 phase。";
   else if (!hasPhase) hint = "先 LOAD 目標合約、等待鏈上 phase 讀取。";
   else if (state.armed) hint = "⏻ 待命中：已預簽並盯塊，模擬偵測到開售即自動並發廣播。可按 DISARM 解除。";
   else if (data.didMintEnd) hint = "此合約已售罄結束——開火會 revert（適合拿測試錢包驗流程）。";
-  else if (data.phase.phaseType === 1) hint = "白名單 phase：先為所有錢包抓 proof 再 ARM / 開火。";
+  else if (phase.phaseType === 1) hint = "白名單 phase：先為所有錢包抓 proof 再 ARM / 開火。";
+  else if (state.mintMode === "phase") hint = "已選定 phase：成本套用該 phase 價格；ARM 後會等待此 phase 時間窗 + 模擬成功才開火（合約仍自行判定真正 live 的 phase）。";
   else hint = "可『ARM 待命』盯塊自動搶；或『立即開火』手動送出。";
   dom.fireHint.textContent = hint;
 }
@@ -767,6 +914,10 @@ function wire() {
 
   dom.loadBtn.addEventListener("click", loadContract);
   dom.contractInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadContract(); });
+
+  dom.modeRadios.forEach((r) => r.addEventListener("change", () => { if (r.checked) setMintMode(r.value); }));
+  dom.loadPhasesBtn.addEventListener("click", loadAllPhases);
+  dom.phaseSelect.addEventListener("change", onPhaseSelectChange);
 
   dom.loadWalletsBtn.addEventListener("click", loadWalletsFromTextarea);
   dom.genTestBtn.addEventListener("click", genTestWallet);
