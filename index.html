@@ -65,6 +65,40 @@
     <span class="target-status mono" id="targetStatus" aria-live="polite"></span>
   </section>
 
+  <!-- ========================= MODE ========================= -->
+  <section class="panel mode-bar">
+    <span class="mode-label mono">MINT 模式</span>
+    <div class="mode-toggle" role="radiogroup" aria-label="Mint 模式選擇">
+      <label class="mode-option">
+        <input type="radio" name="mintMode" id="modePublic" value="public" checked>
+        <span>公開 Mint</span>
+      </label>
+      <label class="mode-option">
+        <input type="radio" name="mintMode" id="modePhase" value="phase">
+        <span>選擇 Phase</span>
+      </label>
+    </div>
+    <span class="mode-hint mono">預設「公開 Mint」；「選擇 Phase」用於決定價格 / 是否抓白名單 proof / ARM 等哪個時間窗——合約仍自行判定真正 live 的 phase。</span>
+  </section>
+
+  <!-- ==================== PHASE 選擇器（僅「選擇 Phase」模式顯示） ==================== -->
+  <section class="panel phase-selector-panel" id="phaseSelectorPanel" hidden>
+    <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
+    <header class="card-head">
+      <h2>PHASE 選擇器</h2>
+      <button class="btn btn-ghost btn-sm" id="loadPhasesBtn" type="button">讀取 PHASE 列表</button>
+    </header>
+    <div class="phase-selector-body">
+      <label class="field">
+        <span>選擇 Phase（依鏈上 phaseCount() + phases(0..n-1) 即時讀取）</span>
+        <select id="phaseSelect" class="mono-input" disabled>
+          <option value="">— 尚未讀取，請按「讀取 PHASE 列表」—</option>
+        </select>
+      </label>
+      <p class="phase-selector-status mono" id="phaseSelectorStatus" aria-live="polite"></p>
+    </div>
+  </section>
+
   <!-- ==================== COLLECTION + PHASE ==================== -->
   <section class="grid-2">
     <div class="panel card" id="collectionCard">
@@ -97,7 +131,7 @@
     <div class="panel card" id="phaseCard" data-active="false">
       <span class="reticle-corner tl"></span><span class="reticle-corner tr"></span><span class="reticle-corner bl"></span><span class="reticle-corner br"></span>
       <header class="card-head">
-        <h2>ACTIVE PHASE</h2>
+        <h2 id="phaseCardTitle">ACTIVE PHASE</h2>
         <span class="phase-type-badge" id="phaseTypeBadge">—</span>
       </header>
       <div class="card-body">

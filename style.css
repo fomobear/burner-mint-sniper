@@ -159,6 +159,32 @@ select.mono-input { cursor: pointer; }
 .target-status[data-tone="ok"] { color: var(--ok); }
 .target-status[data-tone="error"] { color: var(--danger); }
 
+/* ---- mint 模式切換 ---- */
+.mode-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.mode-label { font-family: var(--mono); font-size: 11px; letter-spacing: 2px; color: var(--accent); }
+.mode-toggle { display: flex; gap: 8px; flex-wrap: wrap; }
+.mode-option { position: relative; display: inline-flex; }
+.mode-option input {
+  position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer;
+}
+.mode-option span {
+  display: inline-flex; align-items: center; font-family: var(--mono); font-size: 12px; letter-spacing: 1px;
+  padding: 8px 16px; border: 1px solid var(--panel-line); border-radius: var(--radius);
+  color: var(--ink-dim); background: rgba(0,0,0,0.3); cursor: pointer; transition: all 0.14s ease;
+}
+.mode-option input:hover + span { border-color: var(--accent-dim); color: var(--ink); }
+.mode-option input:checked + span { color: #0a0e0a; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.mode-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mode-hint { flex: 1 1 260px; font-size: 11px; color: var(--ink-faint); letter-spacing: 0.2px; line-height: 1.5; }
+
+/* ---- phase 選擇器（選擇 Phase 模式） ---- */
+.phase-selector-body { display: flex; flex-direction: column; gap: 10px; }
+.phase-selector-status { font-size: 12px; margin: 0; color: var(--ink-dim); min-height: 16px; }
+.phase-selector-status[data-tone="ok"] { color: var(--ok); }
+.phase-selector-status[data-tone="error"] { color: var(--danger); }
+.phase-selector-status[data-tone="warn"] { color: var(--warn); }
+.phase-selector-status[data-tone="pending"] { color: var(--cyan); }
+
 /* ---- collection / phase cards ---- */
 .collection-id { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .collection-name { font-size: 20px; font-weight: 700; color: #fff; }
