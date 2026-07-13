@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MINT MONITOR // 開賣監聽</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='%23c8ff4d' stroke-width='8'/%3E%3Ccircle cx='50' cy='50' r='10' fill='%23c8ff4d'/%3E%3C/svg%3E">
+<style>
+  :root{--bg:#070b07;--panel:rgba(14,20,14,.82);--line:rgba(200,255,77,.16);--ink:#d6e7d0;--dim:#7f9178;--faint:#566254;--accent:#c8ff4d;--ok:#7bff8e;--warn:#ffcf5a;--danger:#ff5d5d;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--sans);background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5;padding:clamp(14px,4vw,40px);
+       background-image:linear-gradient(rgba(200,255,77,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(200,255,77,.04) 1px,transparent 1px);background-size:44px 44px}
+  .mono{font-family:var(--mono)}
+  .wrap{max-width:820px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  h1{font-family:var(--mono);font-size:clamp(15px,2.4vw,20px);letter-spacing:2px;font-weight:700}
+  h1 small{display:block;color:var(--dim);font-size:10px;letter-spacing:2px}
+  .home{font-family:var(--mono);font-size:11px;color:var(--dim);text-decoration:none;border:1px solid var(--line);padding:6px 12px;border-radius:4px}
+  .home:hover{color:var(--accent);border-color:var(--accent)}
+  .panel{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:18px}
+  .status-card{text-align:center;padding:28px 18px}
+  .status-badge{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:clamp(18px,4vw,28px);font-weight:700;letter-spacing:2px;padding:10px 22px;border-radius:999px;border:2px solid}
+  .status-badge .dot{width:14px;height:14px;border-radius:50%}
+  .s-closed{color:var(--dim);border-color:var(--faint)}.s-closed .dot{background:var(--faint)}
+  .s-watch{color:var(--warn);border-color:rgba(255,207,90,.5)}.s-watch .dot{background:var(--warn);animation:pulse 1.2s infinite}
+  .s-open{color:var(--ok);border-color:var(--ok);background:rgba(123,255,142,.1)}.s-open .dot{background:var(--ok);box-shadow:0 0 12px var(--ok);animation:pulse .8s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .sub{margin-top:14px;color:var(--dim);font-size:13px}
+  .prog{margin-top:18px}
+  .prog-nums{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--dim);margin-bottom:6px}
+  .prog-track{height:10px;background:rgba(0,0,0,.5);border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .prog-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#8fae2e);transition:width .5s}
+  .cfg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:560px){.cfg{grid-template-columns:1fr}}
+  .field{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--dim)}
+  .field input{font-family:var(--mono);font-size:12px;color:var(--ink);background:rgba(0,0,0,.4);border:1px solid var(--line);border-radius:4px;padding:9px 11px;width:100%;outline:none}
+  .field input:focus{border-color:#8fae2e}
+  .row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+  .btn{font-family:var(--mono);font-size:12px;letter-spacing:1px;font-weight:600;padding:9px 16px;border-radius:4px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--accent);cursor:pointer}
+  .btn:hover{background:rgba(200,255,77,.12)}
+  .kv{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+  .kv b{color:var(--ink);font-family:var(--mono)}
+  .log{max-height:300px;overflow-y:auto;font-family:var(--mono);font-size:12px;display:flex;flex-direction:column;gap:2px}
+  .log .line{padding:3px 0;border-bottom:1px solid rgba(200,255,77,.05);color:var(--dim)}
+  .log .line.ok{color:var(--ok)}.log .line.hit{color:var(--accent);font-weight:700}
+  .note{font-size:11px;color:var(--faint);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>MINT MONITOR<small>// 開賣監聽（唯讀）</small></h1>
+    <a class="home" href="./index.html">← 搶鑄主控台</a>
+  </header>
+
+  <div class="panel status-card">
+    <div class="status-badge s-closed" id="badge"><span class="dot"></span><span id="badgeText">初始化…</span></div>
+    <div class="sub" id="collName">—</div>
+    <div class="prog">
+      <div class="prog-nums"><span>MINTED</span><span class="mono" id="supply">— / —</span></div>
+      <div class="prog-track"><div class="prog-fill" id="fill"></div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="cfg">
+      <label class="field"><span>合約地址</span><input id="contract" class="mono" spellcheck="false" value="0xa3F56AdB32D3A8F3b41462e3fBF17f36829325bE"></label>
+      <label class="field"><span>RPC URL</span><input id="rpc" class="mono" spellcheck="false" value="https://robinhood-mainnet.g.alchemy.com/v2/wshSTTr1LEcj08J6cQCbX"></label>
+      <label class="field"><span>輪詢間隔（秒）</span><input id="interval" class="mono" type="number" min="5" step="5" value="30"></label>
+      <div class="field"><span>&nbsp;</span><div class="row"><button class="btn" id="toggle">▶ 開始監聽</button><button class="btn" id="notify">啟用通知</button></div></div>
+    </div>
+    <div class="kv" style="margin-top:14px">
+      <span>狀態：<b id="running">停止</b></span><span>上次檢查：<b id="last">—</b></span><span>下次：<b id="next">—</b></span><span>已檢查：<b id="count">0</b> 次</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="mono" style="font-size:13px;color:var(--accent);letter-spacing:1px;margin-bottom:10px">監聽紀錄</div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <p class="note">純唯讀鏈上監聽：每隔設定秒數讀合約 totalMinted，偵測到「公眾開賣」（出現非 owner 的 mint）即高亮 + 桌面通知。不含任何錢包 / 鑄造功能。ASCII CATS 是 1 IP=1 mint、每錢包 1 隻的反 bot 免費 mint；開了請自己上 asciicats.xyz 用一個錢包正常鑄。</p>
+</div>
+
+<script type="module">
+import * as ethers from "./vendor/ethers.min.js";
+const CHAIN_ID=4663, OWNER="0x860e323312dd0c320a72e9375e180ba614eb504f", BASELINE_BLOCK=6920748;
+const TRANSFER=ethers.id("Transfer(address,address,uint256)"), ZERO32="0x"+"0".repeat(64);
+const ABI=["function totalMinted() view returns (uint256)","function MAX_SUPPLY() view returns (uint256)","function name() view returns (string)"];
+const $=(id)=>document.getElementById(id);
+let timer=null, count=0, opened=false, nextAt=0;
+
+function log(msg,cls=""){const d=document.createElement("div");d.className="line"+(cls?" "+cls:"");d.textContent="["+new Date().toLocaleTimeString("zh-TW",{hour12:false})+"] "+msg;$("log").prepend(d);while($("log").childElementCount>300)$("log").lastElementChild.remove();}
+function setBadge(state,text){const b=$("badge");b.className="status-badge "+state;$("badgeText").textContent=text;}
+
+async function poll(){
+  const rpc=$("rpc").value.trim(), addr=$("contract").value.trim();
+  try{
+    const p=new ethers.JsonRpcProvider(rpc,{chainId:CHAIN_ID,name:"rh"},{staticNetwork:true});
+    const c=new ethers.Contract(addr,ABI,p);
+    const [total,max,name]=await Promise.all([c.totalMinted(),c.MAX_SUPPLY().catch(()=>0n),c.name().catch(()=>"")]);
+    const t=Number(total), m=Number(max)||3333;
+    $("collName").textContent=name||"—";
+    $("supply").textContent=`${t} / ${m}`;
+    $("fill").style.width=Math.min(100,(t/m)*100)+"%";
+    $("last").textContent=new Date().toLocaleTimeString("zh-TW",{hour12:false});
+    count++; $("count").textContent=count;
+    // 偵測公眾開賣：total>1 且有非 owner mint
+    let open=false, publicN=0;
+    if(t>1){
+      try{
+        const logs=await p.getLogs({address:addr,topics:[TRANSFER,ZERO32],fromBlock:BASELINE_BLOCK,toBlock:"latest"});
+        const hs=[...new Set(logs.map(l=>l.transactionHash))].slice(0,25);
+        const senders=new Set();
+        for(const h of hs){const tx=await p.getTransaction(h);if(tx)senders.add(tx.from.toLowerCase());}
+        publicN=[...senders].filter(s=>s!==OWNER).length;
+        open=publicN>0||t>=5;
+      }catch{open=t>=5;}
+    }
+    if(open){
+      if(!opened){opened=true;setBadge("s-open","🟢 開賣中！");log(`🚨 偵測到公眾開賣！totalMinted=${t}/${m}${publicN?`（非 owner ${publicN} 個已鑄）`:""}`,"hit");
+        try{if(Notification.permission==="granted")new Notification("ASCII CATS 開賣了！",{body:`totalMinted ${t}/${m}｜快上 asciicats.xyz 鑄`});}catch{}
+        document.title="🟢 開賣中 — MINT MONITOR";}
+      else setBadge("s-open","🟢 開賣中！");
+    }else{
+      setBadge("s-watch","盯塊中…未開");
+      log(`檢查：totalMinted ${t}/${m}｜尚未開（owner-only）`,"");
+    }
+  }catch(e){setBadge("s-watch","RPC 讀取失敗，重試中");log("讀取失敗："+(e.shortMessage||e.message||e),"");}
+}
+
+function tick(){poll();nextAt=Date.now()+intervalMs();}
+function intervalMs(){return Math.max(5,parseInt($("interval").value,10)||30)*1000;}
+function start(){if(timer)return;$("running").textContent="監聽中";$("toggle").textContent="⏹ 停止監聽";tick();timer=setInterval(tick,intervalMs());}
+function stop(){clearInterval(timer);timer=null;$("running").textContent="停止";$("toggle").textContent="▶ 開始監聽";$("next").textContent="—";}
+$("toggle").addEventListener("click",()=>timer?stop():start());
+$("notify").addEventListener("click",()=>{try{Notification.requestPermission();}catch{}});
+$("interval").addEventListener("change",()=>{if(timer){stop();start();}});
+setInterval(()=>{if(timer&&nextAt){const s=Math.max(0,Math.ceil((nextAt-Date.now())/1000));$("next").textContent=s+"s";}},500);
+// 自動開始
+start();
+</script>
+</body>
+</html>
